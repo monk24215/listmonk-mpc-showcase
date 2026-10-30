@@ -1,0 +1,263 @@
+From f390a49737aa1e40e2c5a2c40e8253cd29944fff Mon Sep 17 00:00:00 2001
+From: Kristian Micah Oubre <koubre@gmail.com>
+Date: Sun, 25 Oct 2026 08:31:30 -0500
+Subject: [PATCH] Add template, bounce and transactional tools
+
+Co-Authored-By: Claude Haiku 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_015FcUH84m8epz7ByYGX1jQL
+---
+ src/index.ts               |   5 +-
+ src/tools/bounces.ts       |  62 +++++++++++++++++++++++
+ src/tools/templates.ts     | 100 +++++++++++++++++++++++++++++++++++++
+ src/tools/transactional.ts |  40 +++++++++++++++
+ 4 files changed, 206 insertions(+), 1 deletion(-)
+ create mode 100644 src/tools/bounces.ts
+ create mode 100644 src/tools/templates.ts
+ create mode 100644 src/tools/transactional.ts
+
+diff --git a/src/index.ts b/src/index.ts
+index dfff1d8..9425819 100644
+--- a/src/index.ts
++++ b/src/index.ts
+@@ -10,6 +10,9 @@ import { registerSystemTools } from "./tools/system.js";
+ import { registerListTools } from "./tools/lists.js";
+ import { registerSubscriberTools } from "./tools/subscribers.js";
+ import { registerCampaignTools } from "./tools/campaigns.js";
++import { registerTemplateTools } from "./tools/templates.js";
++import { registerBounceTools } from "./tools/bounces.js";
++import { registerTransactionalTools } from "./tools/transactional.js";
+ 
+ export const SERVER_NAME = "listmonk-mcp";
+ export const SERVER_VERSION = "0.1.0";
+@@ -17,7 +20,7 @@ export const SERVER_VERSION = "0.1.0";
+ export function buildServer(cfg: Config): { server: McpServer; registered: number } {
+   const lm = new ListmonkClient(cfg);
+   const server = new McpServer({ name: SERVER_NAME, version: SERVER_VERSION });
+-  const registered = registerSystemTools(server, cfg, lm) + registerListTools(server, cfg, lm) + registerSubscriberTools(server, cfg, lm) + registerCampaignTools(server, cfg, lm);
++  const registered = registerSystemTools(server, cfg, lm) + registerListTools(server, cfg, lm) + registerSubscriberTools(server, cfg, lm) + registerCampaignTools(server, cfg, lm) + registerTemplateTools(server, cfg, lm) + registerBounceTools(server, cfg, lm) + registerTransactionalTools(server, cfg, lm);
+   return { server, registered };
+ }
+ 
+diff --git a/src/tools/bounces.ts b/src/tools/bounces.ts
+new file mode 100644
+index 0000000..9778377
+--- /dev/null
++++ b/src/tools/bounces.ts
+@@ -0,0 +1,62 @@
++import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
++import { z } from "zod";
++import type { Config } from "../config.js";
++import type { ListmonkClient } from "../listmonk.js";
++import { registerTool } from "./helpers.js";
++
++export function registerBounceTools(server: McpServer, cfg: Config, lm: ListmonkClient): number {
++  let n = 0;
++
++  n += +registerTool(
++    server,
++    cfg,
++    {
++      name: "bounces_search",
++      title: "Search bounces",
++      description: "Recorded bounces, newest first. Filter by bounce type (soft, hard, complaint) and campaign.",
++      kind: "read",
++      inputSchema: {
++        type: z.enum(["soft", "hard", "complaint"]).optional(),
++        campaign_id: z.number().int().positive().optional(),
++        page: z.number().int().min(1).default(1),
++        per_page: z.number().int().min(1).max(100).default(20),
++      },
++    },
++    async (args) =>
++      lm.get("/bounces", {
++        type: args.type as string | undefined,
++        campaign_id: args.campaign_id as number | undefined,
++        page: args.page as number,
++        per_page: args.per_page as number,
++      }),
++  );
++
++  n += +registerTool(
++    server,
++    cfg,
++    {
++      name: "bounce_get",
++      title: "Get bounce",
++      description: "One bounce record by id.",
++      kind: "read",
++      inputSchema: { id: z.number().int().positive() },
++    },
++    async (args) => lm.get(`/bounces/${Number(args.id)}`),
++  );
++
++  n += +registerTool(
++    server,
++    cfg,
++    {
++      name: "bounce_delete",
++      title: "Delete bounce record",
++      description:
++        "Delete a bounce record by id. Does not change the subscriber's status; use subscriber_update to re-enable a subscriber.",
++      kind: "destructive",
++      inputSchema: { id: z.number().int().positive() },
++    },
++    async (args) => lm.del(`/bounces/${Number(args.id)}`),
++  );
++
++  return n;
++}
+diff --git a/src/tools/templates.ts b/src/tools/templates.ts
+new file mode 100644
+index 0000000..5e8ab34
+--- /dev/null
++++ b/src/tools/templates.ts
+@@ -0,0 +1,100 @@
++import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
++import { z } from "zod";
++import type { Config } from "../config.js";
++import type { ListmonkClient } from "../listmonk.js";
++import { registerTool } from "./helpers.js";
++
++export function registerTemplateTools(server: McpServer, cfg: Config, lm: ListmonkClient): number {
++  let n = 0;
++
++  n += +registerTool(
++    server,
++    cfg,
++    {
++      name: "templates_list",
++      title: "List templates",
++      description: "All campaign and transactional templates with id, name, type, and default flag.",
++      kind: "read",
++      inputSchema: {},
++    },
++    async () => lm.get("/templates"),
++  );
++
++  n += +registerTool(
++    server,
++    cfg,
++    {
++      name: "template_get",
++      title: "Get template",
++      description: "One template by id, including its HTML body.",
++      kind: "read",
++      inputSchema: { id: z.number().int().positive() },
++    },
++    async (args) => lm.get(`/templates/${Number(args.id)}`),
++  );
++
++  n += +registerTool(
++    server,
++    cfg,
++    {
++      name: "template_create",
++      title: "Create template",
++      description:
++        "Create a template. type is 'campaign' (for campaigns) or 'tx' (for transactional sends). body must contain {{ template \"content\" . }} for campaign templates.",
++      kind: "write",
++      inputSchema: {
++        name: z.string().min(1),
++        type: z.enum(["campaign", "tx"]),
++        subject: z.string().default(""),
++        body: z.string().min(1),
++      },
++    },
++    async (args) => lm.post("/templates", { name: args.name, type: args.type, subject: args.subject, body: args.body }),
++  );
++
++  n += +registerTool(
++    server,
++    cfg,
++    {
++      name: "template_update",
++      title: "Update template",
++      description: "Update a template. Only the fields you pass change.",
++      kind: "write",
++      inputSchema: {
++        id: z.number().int().positive(),
++        name: z.string().min(1).optional(),
++        subject: z.string().optional(),
++        body: z.string().optional(),
++      },
++    },
++    async (args) => {
++      const id = Number(args.id);
++      const current = await lm.get<Record<string, any>>(`/templates/${id}`);
++      const merged = {
++        name: current.name,
++        type: current.type,
++        subject: current.subject ?? "",
++        body: current.body,
++        ...(args.name !== undefined ? { name: args.name } : {}),
++        ...(args.subject !== undefined ? { subject: args.subject } : {}),
++        ...(args.body !== undefined ? { body: args.body } : {}),
++      };
++      return lm.put(`/templates/${id}`, merged);
++    },
++  );
++
++  n += +registerTool(
++    server,
++    cfg,
++    {
++      name: "template_delete",
++      title: "Delete template",
++      description: "Permanently delete a template. Listmonk refuses to delete the default template or one in use by a campaign.",
++      kind: "destructive",
++      inputSchema: { id: z.number().int().positive() },
++    },
++    async (args) => lm.del(`/templates/${Number(args.id)}`),
++  );
++
++  return n;
++}
+diff --git a/src/tools/transactional.ts b/src/tools/transactional.ts
+new file mode 100644
+index 0000000..bf3e603
+--- /dev/null
++++ b/src/tools/transactional.ts
+@@ -0,0 +1,40 @@
++import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
++import { z } from "zod";
++import type { Config } from "../config.js";
++import type { ListmonkClient } from "../listmonk.js";
++import { registerTool } from "./helpers.js";
++
++export function registerTransactionalTools(server: McpServer, cfg: Config, lm: ListmonkClient): number {
++  let n = 0;
++
++  n += +registerTool(
++    server,
++    cfg,
++    {
++      name: "tx_send",
++      title: "Send transactional email",
++      description:
++        "Send one transactional email from a 'tx' template to a subscriber email. data fills template placeholders. Sends real mail.",
++      kind: "write",
++      inputSchema: {
++        template_id: z.number().int().positive(),
++        subscriber_email: z.string().email(),
++        data: z.record(z.unknown()).default({}),
++        content_type: z.enum(["html", "markdown", "plain"]).default("html"),
++        from_email: z.string().optional(),
++        subject: z.string().optional(),
++      },
++    },
++    async (args) =>
++      lm.post("/tx", {
++        template_id: args.template_id,
++        subscriber_email: args.subscriber_email,
++        data: args.data,
++        content_type: args.content_type,
++        ...(args.from_email ? { from_email: args.from_email } : {}),
++        ...(args.subject ? { subject: args.subject } : {}),
++      }),
++  );
++
++  return n;
++}
+-- 
+2.43.0
+
